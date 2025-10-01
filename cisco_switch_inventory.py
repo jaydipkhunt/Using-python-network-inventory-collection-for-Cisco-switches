@@ -1,15 +1,16 @@
 from netmiko import ConnectHandler
 from openpyxl import Workbook
 from datetime import datetime
+from getpass import getpass
 import re
+
+# Prompt credentials securely
+username = input("Enter username: ")
+password = getpass("Enter password: ")
 
 # Read device IPs
 with open("device_ips.txt") as f:
     device_ips = [line.strip() for line in f if line.strip()]
-
-# SSH credentials
-username = "your_username"
-password = "your_password"
 
 # Create Excel workbook
 wb = Workbook()
@@ -19,6 +20,7 @@ ws.append([
     "Hostname",
     "IP Address",
     "Switch#",
+    "Role",
     "Model Number",
     "Serial Number",
     "MAC Address",
@@ -46,50 +48,53 @@ for ip in device_ips:
         # Run show version
         version_output = connection.send_command("show version")
 
-        # --- Extract Software Version (e.g. 16.09.06) ---
-        sw_ver_match = re.search(r"Version\s+(\d+\.\d+\.\d+)", version_output)
+        # Extract software version
+        sw_ver_match = re.search(r"Version\s+([\d.()A-Za-z]+)", version_output)
         software_version = sw_ver_match.group(1) if sw_ver_match else "N/A"
 
-        # Initialize switch list
         switches = []
 
-        # --- Main Switch (Switch 1) ---
-        main_model = re.search(r"Model Number\s+:\s+(WS\S+)", version_output)
-        main_serial = re.search(r"System Serial Number\s+:\s+(\S+)", version_output)
-        main_mac = re.search(r"Base Ethernet MAC Address\s+:\s+([0-9a-fA-F:.]+)", version_output)
+        # ---- MASTER SWITCH (Top section) ----
+        master_model = re.search(r"Model Number\s+:\s+(\S+)", version_output)
+        master_serial = re.search(r"System Serial Number\s+:\s+(\S+)", version_output)
+        master_mac = re.search(r"Base Ethernet MAC Address\s+:\s+([0-9a-fA-F:.]+)", version_output)
 
-        if main_model and main_serial:
+        if master_model and master_serial:
             switches.append({
                 "switch_number": 1,
-                "model": main_model.group(1),
-                "serial": main_serial.group(1),
-                "mac": main_mac.group(1) if main_mac else "N/A"
+                "role": "Master",
+                "model": master_model.group(1),
+                "serial": master_serial.group(1),
+                "mac": master_mac.group(1) if master_mac else "N/A"
             })
 
-        # --- Other Switches ---
-        switch_blocks = re.findall(r"(Switch (\d+)\n[-]+\n(.*?))(?=(\nSwitch \d+)|\Z)", version_output, re.DOTALL)
+        # ---- MEMBER SWITCHES (Switch 2, 3, etc.) ----
+        switch_blocks = re.findall(r"(Switch \d+\n[-]+\n.*?)(?=(\nSwitch \d+)|\Z)", version_output, re.DOTALL)
 
-        for block, number, content, _ in switch_blocks:
-            model = re.search(r"Model Number\s+:\s+(WS\S+)", content)
-            serial = re.search(r"System Serial Number\s+:\s+(\S+)", content)
-            mac = re.search(r"Base Ethernet MAC Address\s+:\s+([0-9a-fA-F:.]+)", content)
+        for block, _ in switch_blocks:
+            sw_num_match = re.search(r"Switch\s+(\d+)", block)
+            model_match = re.search(r"Model Number\s+:\s+(\S+)", block)
+            serial_match = re.search(r"System Serial Number\s+:\s+(\S+)", block)
+            mac_match = re.search(r"Base Ethernet MAC Address\s+:\s+([0-9a-fA-F:.]+)", block)
 
             switches.append({
-                "switch_number": int(number),
-                "model": model.group(1) if model else "N/A",
-                "serial": serial.group(1) if serial else "N/A",
-                "mac": mac.group(1) if mac else "N/A"
+                "switch_number": sw_num_match.group(1) if sw_num_match else "N/A",
+                "role": "Member",
+                "model": model_match.group(1) if model_match else "N/A",
+                "serial": serial_match.group(1) if serial_match else "N/A",
+                "mac": mac_match.group(1) if mac_match else "N/A"
             })
 
-        # Total stack count
+        # ---- Stack count ----
         stack_count = len(switches)
 
-        # Write to Excel
+        # ---- Write to Excel ----
         for sw in switches:
             ws.append([
                 hostname,
                 ip,
                 sw["switch_number"],
+                sw["role"],
                 sw["model"],
                 sw["serial"],
                 sw["mac"],
@@ -102,7 +107,7 @@ for ip in device_ips:
 
     except Exception as e:
         print(f"❌ Failed to connect to {ip}: {e}")
-        ws.append([f"Connection Failed", ip, "", "", "", "", "", ""])
+        ws.append([f"Connection Failed", ip, "", "", "", "", "", "", ""])
 
 # Save Excel file
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
